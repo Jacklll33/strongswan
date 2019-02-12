@@ -1874,6 +1874,9 @@ static void trigger_mbb_reauth(private_task_manager_t *this)
 		child_create->use_marks(child_create,
 								child_sa->get_mark(child_sa, TRUE).value,
 								child_sa->get_mark(child_sa, FALSE).value);
+		child_create->use_if_ids(child_create,
+								 child_sa->get_if_id(child_sa, TRUE),
+								 child_sa->get_if_id(child_sa, FALSE));
 		new->queue_task(new, &child_create->task);
 		children = TRUE;
 	}
