@@ -154,7 +154,7 @@ connections.<conn>.dpd_timeout = 0s
 	specified; this option has no effect on connections using IKE2.
 
 connections.<conn>.fragmentation = yes
-	Use IKE UDP datagram fragmentation.  (_yes_, _accept_, _no_ or _force_).
+	Use IKE UDP datagram fragmentation (_yes_, _accept_, _no_ or _force_).
 
 	Use IKE fragmentation (proprietary IKEv1 extension or RFC 7383 IKEv2
 	fragmentation).  Acceptable  values  are _yes_ (the	default), _accept_,
@@ -167,6 +167,21 @@ connections.<conn>.fragmentation = yes
 
 	Note that fragmented IKE messages sent by a peer are always accepted
 	irrespective of the value of this option (even when set to _no_).
+
+connections.<conn>.childless = accept
+	Use childless IKE_SA initiation (_accept_, _prefer_, _force_ or _never_).
+
+	Use childless IKE_SA initiation (RFC 6023) for IKEv2.  Acceptable values
+	are _accept_ (the default), _prefer_, _force_ and _never_. If set to
+	_accept_, responders will accept childless IKE_SAs and initiators will not
+	attempt to create childless IKE_SAs.  If set to _prefer_, a childless IKE_SA
+	is initiated if the responder supports it and an initiated CHILD_SA is
+	created with a separate CREATE_CHILD_SA exchange, otherwise, the CHILD_SA is
+	created with the IKE_AUTH exchange (the initiation will fail if no CHILD_SA
+	is initiated). If set to _force_, only childless initiation	is accepted by
+	initiator or responder (e.g. to force a separate DH exchange for all
+	CHILD_SAs).  Finally, setting the option to _never_ disables support for the
+	childless IKE_SA feature.
 
 connections.<conn>.send_certreq = yes
 	Send certificate requests payloads (_yes_ or _no_).
