@@ -1,0 +1,265 @@
+#!/bin/bash
+
+echo "Building certificates"
+
+# Determine testing directory
+DIR="$(dirname `readlink -f $0`)/.."
+
+# Define some global variables
+PROJECT="strongSwan Project"
+CA_DIR="${DIR}/hosts/winnetou/etc/ca"
+CA_KEY="${CA_DIR}/strongswanKey.pem"
+CA_CERT="${CA_DIR}/strongswanCert.pem"
+CA_CRL="${CA_DIR}/strongswan.crl"
+CA_LAST_CRL="${CA_DIR}/strongswan_last.crl"
+CA_CDP="http://crl.strongswan.org/strongswan.crl"
+CA_OCSP="http://ocsp.strongswan.org:8880"
+CA_LIFETIME=3654     # 10 years
+SUB_CA_LIFETIME=3288 #  9 years
+CERT_LIFETIME=2922   #  8 years
+RESEARCH_KEY=${CA_DIR}/research/researchKey.pem
+RESEARCH_CERT=${CA_DIR}/research/researchCert.pem
+SALES_KEY=${CA_DIR}/sales/salesKey.pem
+SALES_CERT=${CA_DIR}/sales/salesCert.pem
+RSA_SIZE="3072"
+IPSEC_DIR="etc/ipsec.d"
+SWANCTL_DIR="etc/swanctl"
+HOSTS="carol dave moon sun alice venus bob"
+TEST_DIR="${DIR}/tests"
+
+# Generate strongSwan Root CA
+pki --gen  --type rsa --size ${RSA_SIZE} --outform pem > ${CA_KEY}
+pki --self --type rsa --in ${CA_KEY} --ca --lifetime ${CA_LIFETIME} \
+    --pathlen 1 --dn "C=CH, O=${PROJECT}, CN=strongSwan Root CA" \
+    --outform pem > ${CA_CERT}
+
+# Distribute strongSwan Root CA certificate
+for h in ${HOSTS}
+do
+  HOST_DIR="${DIR}/hosts/${h}"
+  cp ${CA_CERT} ${HOST_DIR}/${IPSEC_DIR}/cacerts
+  cp ${CA_CERT} ${HOST_DIR}/${SWANCTL_DIR}/x509ca
+done
+
+# Generate host keys
+for h in ${HOSTS}
+do
+  HOST_DIR="${DIR}/hosts/${h}"
+  HOST_KEY="${HOST_DIR}/${IPSEC_DIR}/private/${h}Key.pem"
+  pki --gen --type rsa --size ${RSA_SIZE} --outform pem > ${HOST_KEY}
+
+  # Put a copy into swanctl directory tree
+  cp ${HOST_KEY} ${HOST_DIR}/${SWANCTL_DIR}/rsa
+done
+
+# function issue_cert: serial host cn [ou]
+issue_cert()
+{
+  # does optional OU argument exist?
+  if [ -z "${4}" ]
+  then
+    OU=""
+  else
+    OU=" OU=${4},"
+  fi
+
+  HOST_DIR="${DIR}/hosts/${2}"
+  HOST_KEY="${HOST_DIR}/${IPSEC_DIR}/private/${2}Key.pem"
+  HOST_CERT="${HOST_DIR}/${IPSEC_DIR}/certs/${2}Cert.pem"
+  pki --issue --cakey ${CA_KEY} --cacert ${CA_CERT} --crl ${CA_CDP} \
+      --type rsa --in ${HOST_KEY} --lifetime ${CERT_LIFETIME} --san ${3} \
+      --serial ${1} --dn "C=CH, O=${PROJECT},${OU} CN=${3}" \
+      --outform pem > ${HOST_CERT}
+  cp ${HOST_CERT} ${CA_DIR}/certs/${1}.pem
+
+  # Put a certificate copy into swanctl directory tree
+  cp ${HOST_CERT} ${HOST_DIR}/${SWANCTL_DIR}/x509
+}
+
+# Generate host certificates
+issue_cert 01 carol carol@strongswan.org Research
+issue_cert 02 dave dave@strongswan.org Accounting
+issue_cert 03 moon moon.strongswan.org
+issue_cert 04 sun sun.strongswan.org
+issue_cert 05 alice alice@strongswan.org Sales
+issue_cert 06 venus venus.strongswan.org
+issue_cert 07 bob bob@strongswan.org Research
+
+# Encrypt carolKey.pem
+HOST_KEY="${DIR}/hosts/carol/${IPSEC_DIR}/private/carolKey.pem"
+KEY_PWD="nH5ZQEWtku0RJEZ6"
+openssl rsa -in ${HOST_KEY} -aes128 --passout pass:${KEY_PWD} -out ${HOST_KEY} \
+        2> /dev/null
+
+# Generate another carol certificate and revoke it
+TEST="${TEST_DIR}/ikev2/crl-revoked"
+TEST_KEY="${TEST}/hosts/carol/${IPSEC_DIR}/private/carolKey.pem"
+TEST_CERT="${TEST}/hosts/carol/${IPSEC_DIR}/certs/carolCert.pem"
+CN="carol@strongswan.org"
+SERIAL="08"
+pki --gen --type rsa --size ${RSA_SIZE} --outform pem > ${TEST_KEY}
+pki --issue --cakey ${CA_KEY} --cacert ${CA_CERT} --crl ${CA_CDP} \
+    --type rsa --in ${TEST_KEY} --lifetime ${CERT_LIFETIME} --san ${CN} \
+    --serial ${SERIAL} --dn "C=CH, O=${PROJECT}, OU=Research, CN=${CN}" \
+    --outform pem > ${TEST_CERT}
+pki --signcrl --cakey ${CA_KEY} --cacert ${CA_CERT} --reason "key-compromise" \
+    --serial ${SERIAL} --lifetime 1 > ${CA_LAST_CRL}
+cp ${TEST_CERT} ${CA_DIR}/certs/${SERIAL}.pem
+
+# Put a certificate copy into the ikev2/ocsp-revoked scenario
+cp ${TEST_KEY}  ${TEST_DIR}/ikev2/ocsp-revoked/hosts/carol/${IPSEC_DIR}/private
+cp ${TEST_CERT} ${TEST_DIR}/ikev2/ocsp-revoked/hosts/carol/${IPSEC_DIR}/certs
+
+# Generate another carol certificate with SN=002
+TEST="${TEST_DIR}/ikev2/two-certs"
+TEST_KEY="${TEST}/hosts/carol/${IPSEC_DIR}/private/carolKey-002.pem"
+TEST_CERT="${TEST}/hosts/carol/${IPSEC_DIR}/certs/carolCert-002.pem"
+SERIAL="09"
+pki --gen --type rsa --size ${RSA_SIZE} --outform pem > ${TEST_KEY}
+pki --issue --cakey ${CA_KEY} --cacert ${CA_CERT} --crl ${CA_CDP} \
+    --type rsa --in ${TEST_KEY} --lifetime ${CERT_LIFETIME} --san ${CN} \
+    --serial ${SERIAL} --dn "C=CH, O=${PROJECT}, OU=Research, SN=002, CN=${CN}" \
+    --outform pem > ${TEST_CERT}
+cp ${TEST_CERT} ${CA_DIR}/certs/${SERIAL}.pem
+
+# Generate a Research CA certificate signed by the Root CA and revoke it
+TEST="${TEST_DIR}/ikev2/multi-level-ca-revoked"
+TEST_CERT="${TEST}/hosts/moon/${IPSEC_DIR}/cacerts/researchCert.pem"
+SERIAL="0A"
+pki --gen --type rsa --size ${RSA_SIZE} --outform pem > ${RESEARCH_KEY}
+pki --issue --cakey ${CA_KEY} --cacert ${CA_CERT} --crl ${CA_CDP} \
+    --type rsa --in ${RESEARCH_KEY} --lifetime ${SUB_CA_LIFETIME} --ca \
+    --serial ${SERIAL} --dn "C=CH, O=${PROJECT}, OU=Research, CN=Research CA" \
+    --outform pem > ${TEST_CERT}
+pki --signcrl --cakey ${CA_KEY} --cacert ${CA_CERT} --reason "ca-compromise" \
+    --serial ${SERIAL} --lastcrl ${CA_LAST_CRL} --lifetime 1 > ${CA_CRL}
+rm ${CA_LAST_CRL}
+cp ${TEST_CERT} ${CA_DIR}/certs/${SERIAL}.pem
+
+# Put a crl copy into the ikev2/crl-ldap scenario to be used as a stale crl
+cp ${CA_CRL} ${TEST_DIR}/ikev2/crl-ldap/hosts/carol/etc/ipsec.d/crls/stale.crl
+cp ${CA_CRL} ${TEST_DIR}/ikev2/crl-ldap/hosts/moon/etc/ipsec.d/crls/stale.crl
+
+# Generate Research CA signed by Root CA
+SERIAL="0B"
+pki --gen  --type rsa --size ${RSA_SIZE} --outform pem > ${RESEARCH_KEY}
+pki --issue --cakey ${CA_KEY} --cacert ${CA_CERT} --crl ${CA_CDP} \
+    --type rsa --in ${RESEARCH_KEY} --lifetime ${SUB_CA_LIFETIME} --ca \
+    --serial ${SERIAL} --dn "C=CH, O=${PROJECT}, OU=Research, CN=Research CA" \
+    --outform pem > ${RESEARCH_CERT}
+cp ${RESEARCH_CERT} ${CA_DIR}/certs/${SERIAL}.pem
+
+# Generate Sales CA signed by Root CA
+SERIAL="0C"
+pki --gen  --type rsa --size ${RSA_SIZE} --outform pem > ${SALES_KEY}
+pki --issue --cakey ${CA_KEY} --cacert ${CA_CERT} --crl ${CA_CDP} \
+    --type rsa --in ${SALES_KEY} --lifetime ${SUB_CA_LIFETIME} --ca \
+    --serial ${SERIAL} --dn "C=CH, O=${PROJECT}, OU=Sales, CN=Sales CA" \
+    --outform pem > ${SALES_CERT}
+cp ${SALES_CERT} ${CA_DIR}/certs/${SERIAL}.pem
+
+# Generate an AES-128 encrypted moon key and a SHA-224 hashed certificate
+TEST="${TEST_DIR}/ikev2/strong-keys-certs"
+TEST_KEY="${TEST}/hosts/moon/${IPSEC_DIR}/private/moonKey-aes128.pem"
+TEST_CERT="${TEST}/hosts/moon/${IPSEC_DIR}/certs/moonCert-sha224.pem"
+KEY_PWD="gOQHdrSWeFuiZtYPetWuyzHW"
+CN="moon.strongswan.org"
+SERIAL="0D"
+pki --gen --type rsa --size ${RSA_SIZE} --outform pem > ${TEST_KEY}
+pki --issue --cakey ${CA_KEY} --cacert ${CA_CERT} --crl ${CA_CDP} \
+    --type rsa --in ${TEST_KEY} --lifetime ${CERT_LIFETIME} --san ${CN} \
+    --serial ${SERIAL} --dn "C=CH, O=${PROJECT}, OU=SHA-224, CN=${CN}" \
+    --digest sha224 --outform pem > ${TEST_CERT}
+openssl rsa -in ${TEST_KEY} -aes128 --passout pass:${KEY_PWD} -out ${TEST_KEY} \
+        2> /dev/null
+cp ${TEST_CERT} ${CA_DIR}/certs/${SERIAL}.pem
+
+# Generate an AES-192 encrypted carol key and a SHA-384 hashed certificate
+TEST_KEY="${TEST}/hosts/carol/${IPSEC_DIR}/private/carolKey-aes192.pem"
+TEST_CERT="${TEST}/hosts/carol/${IPSEC_DIR}/certs/carolCert-sha384.pem"
+KEY_PWD="ITP/H4lSHqGpUGmCpgNDklbzTNV+swjA"
+CN="carol@strongswan.org"
+SERIAL="0E"
+pki --gen --type rsa --size ${RSA_SIZE} --outform pem > ${TEST_KEY}
+pki --issue --cakey ${CA_KEY} --cacert ${CA_CERT} --crl ${CA_CDP} \
+    --type rsa --in ${TEST_KEY} --lifetime ${CERT_LIFETIME} --san ${CN} \
+    --serial ${SERIAL} --dn "C=CH, O=${PROJECT}, OU=SHA-384, CN=${CN}" \
+    --digest sha384 --outform pem > ${TEST_CERT}
+openssl rsa -in ${TEST_KEY} -aes192 --passout pass:${KEY_PWD} -out ${TEST_KEY} \
+        2> /dev/null
+cp ${TEST_CERT} ${CA_DIR}/certs/${SERIAL}.pem
+
+# Generate an AES-256 encrypted dave key and a SHA-512 hashed certificate
+TEST_KEY="${TEST}/hosts/dave/${IPSEC_DIR}/private/daveKey-aes256.pem"
+TEST_CERT="${TEST}/hosts/dave/${IPSEC_DIR}/certs/daveCert-sha512.pem"
+KEY_PWD="MeFnDN7VUbj+qU/bkgRIFvbCketIk2wrrs5Ii8297N2v"
+CN="dave@strongswan.org"
+SERIAL="0F"
+pki --gen --type rsa --size ${RSA_SIZE} --outform pem > ${TEST_KEY}
+pki --issue --cakey ${CA_KEY} --cacert ${CA_CERT} --crl ${CA_CDP} \
+    --type rsa --in ${TEST_KEY} --lifetime ${CERT_LIFETIME} --san ${CN} \
+    --serial ${SERIAL} --dn "C=CH, O=${PROJECT}, OU=SHA-512, CN=${CN}" \
+    --digest sha512 --outform pem > ${TEST_CERT}
+openssl rsa -in ${TEST_KEY} -aes256 --passout pass:${KEY_PWD} -out ${TEST_KEY} \
+        2> /dev/null
+cp ${TEST_CERT} ${CA_DIR}/certs/${SERIAL}.pem
+
+# Generate another carol certificate with an OCSP URI
+TEST="${TEST_DIR}/ikev2/ocsp-signer-cert"
+TEST_KEY="${TEST}/hosts/carol/${IPSEC_DIR}/private/carolKey.pem"
+TEST_CERT="${TEST}/hosts/carol/${IPSEC_DIR}/certs/carolCert.pem"
+CN="carol@strongswan.org"
+SERIAL="10"
+pki --gen --type rsa --size ${RSA_SIZE} --outform pem > ${TEST_KEY}
+pki --issue --cakey ${CA_KEY} --cacert ${CA_CERT} --crl ${CA_CDP} --ocsp ${CA_OCSP} \
+    --type rsa --in ${TEST_KEY} --lifetime ${CERT_LIFETIME} --san ${CN} \
+    --serial ${SERIAL} --dn "C=CH, O=${PROJECT}, OU=OCSP, CN=${CN}" \
+    --outform pem > ${TEST_CERT}
+cp ${TEST_CERT} ${CA_DIR}/certs/${SERIAL}.pem
+
+# Put a certificate copy into the ikev2/ocsp-timeouts-good scenario
+cp ${TEST_KEY}  ${TEST_DIR}/ikev2/ocsp-timeouts-good/hosts/carol/${IPSEC_DIR}/private
+cp ${TEST_CERT} ${TEST_DIR}/ikev2/ocsp-timeouts-good/hosts/carol/${IPSEC_DIR}/certs
+
+# Generate an OCSP Signing certificate for the strongSwan Root CA
+TEST_KEY="${CA_DIR}/ocspKey.pem"
+TEST_CERT="${CA_DIR}/ocspCert.pem"
+CN="ocsp.strongswan.org"
+OU="OCSP Signing Authority"
+SERIAL="11"
+pki --gen --type rsa --size ${RSA_SIZE} --outform pem > ${TEST_KEY}
+pki --issue --cakey ${CA_KEY} --cacert ${CA_CERT} --crl ${CA_CDP} \
+    --type rsa --in ${TEST_KEY} --lifetime ${CERT_LIFETIME} --san ${CN} \
+    --serial ${SERIAL} --dn "C=CH, O=${PROJECT}, OU=${OU}, CN=${CN}" \
+    --flag ocspSigning --outform pem > ${TEST_CERT}
+cp ${TEST_CERT} ${CA_DIR}/certs/${SERIAL}.pem
+
+# Generate a self-signed OCSP Signing certificate
+TEST_KEY="${CA_DIR}/ocspKey-self.pem"
+TEST_CERT="${CA_DIR}/ocspCert-self.pem"
+OU="OCSP Self-Signed Authority"
+pki --gen --type rsa --size ${RSA_SIZE} --outform pem > ${TEST_KEY}
+pki --self --type rsa --in ${TEST_KEY} --lifetime ${CA_LIFETIME} --san ${CN} \
+    --dn "C=CH, O=${PROJECT}, OU=${OU}, CN=${CN}" --flag ocspSigning \
+    --outform pem > ${TEST_CERT}
+
+# Copy self-signed OCSP Signing certificate to ikev2/ocsp-local-cert scenario
+TEST="${TEST_DIR}/ikev2/ocsp-local-cert"
+cp ${TEST_CERT} ${TEST}/hosts/carol/${IPSEC_DIR}/ocsp
+cp ${TEST_CERT} ${TEST}/hosts/moon/${IPSEC_DIR}/ocsp
+
+# function expiration_date: cert_path
+expiration_date()
+{
+  echo $(date -d "$(openssl x509 -enddate -noout -in ${1} | cut -d= -f 2)" \
+         +"%y%m%d%H%M%SZ")
+}
+
+# generate index.txt file for OCSP server
+EE_EXPIRATION=`expiration_date ${CA_DIR}/certs/01.pem`  # carol EE cert
+CA_EXPIRATION=`expiration_date ${CA_DIR}/certs/0B.pem`  # Research CA cert
+REVOCATION=`date +"%y%m%d%H%M%SZ"`
+cp ${CA_DIR}/index.txt.template ${CA_DIR}/index.txt
+sed -i -e "s/EE_EXPIRATION/${EE_EXPIRATION}/g" ${CA_DIR}/index.txt
+sed -i -e "s/CA_EXPIRATION/${CA_EXPIRATION}/g" ${CA_DIR}/index.txt
+sed -i -e "s/REVOCATION/${REVOCATION}/g" ${CA_DIR}/index.txt

@@ -1,0 +1,46 @@
+#!/bin/bash
+
+export LEAK_DETECTIVE_DISABLE=1
+
+ROOT="/var/www"
+
+##
+# strongSwan Root CA
+cd /etc/ca
+
+# generate DER version of strongsSwan CA certificate
+openssl x509 -in strongswanCert.pem -outform der -out ${ROOT}/strongswanCert.der
+
+# generate CRL for strongSwan Root CA
+pki --signcrl --cakey strongswanKey.pem --cacert strongswanCert.pem \
+    --lastcrl strongswan.crl > ${ROOT}/strongswan.crl
+
+# generate Hash-and-URL certificates
+CERTS_DIR="${ROOT}/certs"
+for cert in `ls certs`
+do
+  openssl x509 -in certs/${cert} -outform der -out ${CERTS_DIR}/cert.der
+  mv ${CERTS_DIR}/cert.der ${CERTS_DIR}/`sha1sum ${CERTS_DIR}/cert.der | head -c 40`
+done
+
+##
+# Research CA
+cd /etc/ca/research
+
+# generate DER version of Research CA certificate
+openssl x509 -in researchCert.pem -outform der -out ${ROOT}/researchCert.der
+
+# generate CRL for Research CA
+pki --signcrl --cakey researchKey.pem --cacert researchCert.pem \
+    > ${ROOT}/research.crl
+
+##
+# Sales CA
+cd /etc/ca/sales
+
+# generate DER version of Sales CA certificate
+openssl x509 -in salesCert.pem -outform der -out ${ROOT}/salesCert.der
+
+# generate CRL for Sales CA
+pki --signcrl --cakey salesKey.pem --cacert salesCert.pem \
+    > ${ROOT}/sales.crl
